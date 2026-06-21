@@ -55,7 +55,7 @@ async function run() {
       try {
         const result = await promptCollection.find({}).toArray();
         
-        // টোটাল কাউন্ট যেন আপনার ফ্রন্টএন্ডের totalData রিড করতে পারে
+     
         const totalData = await promptCollection.countDocuments({});
         
         res.json({ data: result, totalData });

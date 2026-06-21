@@ -31,9 +31,39 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     await client.connect();
-    const db = client.db("tech-bazaar");
+    const db = client.db("aicore");
 
- 
+    const promptCollection = db.collection("prompts");
+
+  
+    app.post("/user/prompts", async (req, res) => {
+      try {
+        const data = req.body;
+        const result = await promptCollection.insertOne({
+          ...data,
+          createdAt: new Date()
+        });
+        res.json(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+  
+    app.get("/user/prompts", async (req, res) => {
+      try {
+        const result = await promptCollection.find({}).toArray();
+        
+        // টোটাল কাউন্ট যেন আপনার ফ্রন্টএন্ডের totalData রিড করতে পারে
+        const totalData = await promptCollection.countDocuments({});
+        
+        res.json({ data: result, totalData });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
 
     await client.db("admin").command({ ping: 1 });
     console.log(

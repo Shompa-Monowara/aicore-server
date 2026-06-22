@@ -34,9 +34,9 @@ async function run() {
 
     const promptCollection = db.collection("prompts");
     const userCollection = db.collection("user");
+    const reportCollection = db.collection("reports"); 
 
-    // ==================== PROMPT ROUTES ====================
-
+    //  PROMPT ROUTES
     // Add prompt
     app.post("/user/prompts", async (req, res) => {
       try {
@@ -96,7 +96,7 @@ async function run() {
       }
     });
 
-    // ⚠️ এই route টা /prompts/:id এর আগে রাখতে হবে
+    
     // All Public Prompts — search + filter + sort + pagination
     app.get("/prompts/public", async (req, res) => {
       try {
@@ -183,7 +183,7 @@ async function run() {
       }
     });
 
-    // ==================== ADMIN ROUTES ====================
+    // ADMIN ROUTES 
 
     // Admin Analytics
     app.get("/admin/analytics", async (req, res) => {
@@ -333,7 +333,67 @@ async function run() {
       }
     });
 
-    // ==================== PING ====================
+    //Get all reported prompts
+    app.get("/admin/reports", async (req, res) => {
+      try {
+        const result = await reportCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.json({ data: result });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    //  Dismiss report (not harmful)
+    app.patch("/admin/reports/:id/dismiss", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const result = await reportCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: "dismissed" } }
+        );
+        res.json(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    //  Warn creator
+    app.patch("/admin/reports/:id/warn", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const result = await reportCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: "warned" } }
+        );
+        res.json(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    //  Remove reported prompt — prompt + report দুটোই delete করে
+    app.delete("/admin/reports/:id/remove-prompt", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const report = await reportCollection.findOne({ _id: new ObjectId(id) });
+        if (report?.promptId) {
+          await promptCollection.deleteOne({ _id: new ObjectId(report.promptId) });
+        }
+        const result = await reportCollection.deleteOne({ _id: new ObjectId(id) });
+        res.json(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    // PING 
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged! Successfully connected to MongoDB!");
   } finally {

@@ -105,8 +105,7 @@ async function run() {
           page = 1,
           limit = 9,
         } = req.query;
-
-        const query = {};
+        const query = { status: "approved" };
 
         if (search) {
           query.$or = [
@@ -177,7 +176,7 @@ async function run() {
       }
     });
 
-    //  Bookmark toggle — থাকলে remove, না থাকলে add (duplicate check সহ)
+    //  Bookmark toggle
     app.post("/bookmarks/toggle", async (req, res) => {
       try {
         const { email, promptId } = req.body;
@@ -212,7 +211,7 @@ async function run() {
       }
     });
 
-    //  User এর সব bookmarked prompt (Saved Prompts page dynamic করার সময় লাগবে)
+    //  User 
     app.get("/bookmarks", async (req, res) => {
       try {
         const { email } = req.query;

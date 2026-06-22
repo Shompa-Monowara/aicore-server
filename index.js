@@ -34,10 +34,11 @@ async function run() {
 
     const promptCollection = db.collection("prompts");
     const userCollection = db.collection("user");
-    const reportCollection = db.collection("reports"); 
+    const reportCollection = db.collection("reports");
+    const bookmarkCollection = db.collection("bookmarks"); 
+    const reviewCollection = db.collection("reviews"); 
 
-    //  PROMPT ROUTES
-    // Add prompt
+    // PROMPT ROUTES
     app.post("/user/prompts", async (req, res) => {
       try {
         const data = req.body;
@@ -52,7 +53,6 @@ async function run() {
       }
     });
 
-    // Get prompts (with optional email filter)
     app.get("/user/prompts", async (req, res) => {
       try {
         const { email } = req.query;
@@ -66,7 +66,6 @@ async function run() {
       }
     });
 
-    // Delete prompt
     app.delete("/user/prompts/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -80,7 +79,6 @@ async function run() {
       }
     });
 
-    // Update prompt
     app.patch("/user/prompts/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -96,8 +94,6 @@ async function run() {
       }
     });
 
-    
-    // All Public Prompts — search + filter + sort + pagination
     app.get("/prompts/public", async (req, res) => {
       try {
         const {
@@ -151,7 +147,6 @@ async function run() {
       }
     });
 
-    // Get single prompt by ID
     app.get("/prompts/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -168,7 +163,6 @@ async function run() {
       }
     });
 
-    // Increase copy count
     app.patch("/prompts/:id/copy", async (req, res) => {
       try {
         const { id } = req.params;
@@ -183,18 +177,134 @@ async function run() {
       }
     });
 
-    // ADMIN ROUTES 
+    //  Bookmark toggle — থাকলে remove, না থাকলে add (duplicate check সহ)
+    app.post("/bookmarks/toggle", async (req, res) => {
+      try {
+        const { email, promptId } = req.body;
+        if (!email || !promptId) {
+          return res.status(400).json({ message: "email and promptId are required" });
+        }
+        const existing = await bookmarkCollection.findOne({ email, promptId });
 
-    // Admin Analytics
+        if (existing) {
+          await bookmarkCollection.deleteOne({ _id: existing._id });
+          return res.json({ bookmarked: false });
+        }
+
+        await bookmarkCollection.insertOne({ email, promptId, createdAt: new Date() });
+        res.json({ bookmarked: true });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    //  Bookmark status check (page load এ initial state বুঝার জন্য)
+    app.get("/bookmarks/status", async (req, res) => {
+      try {
+        const { email, promptId } = req.query;
+        if (!email || !promptId) return res.json({ bookmarked: false });
+        const existing = await bookmarkCollection.findOne({ email, promptId });
+        res.json({ bookmarked: !!existing });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    //  User এর সব bookmarked prompt (Saved Prompts page dynamic করার সময় লাগবে)
+    app.get("/bookmarks", async (req, res) => {
+      try {
+        const { email } = req.query;
+        const bookmarks = await bookmarkCollection
+          .find(email ? { email } : {})
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        const promptIds = bookmarks.map((b) => new ObjectId(b.promptId));
+        const prompts = promptIds.length
+          ? await promptCollection.find({ _id: { $in: promptIds } }).toArray()
+          : [];
+
+        res.json({ data: prompts });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    // Review add + prompt এর averageRating recalculate
+    app.post("/reviews", async (req, res) => {
+      try {
+        const { promptId, name, email, rating, comment } = req.body;
+        if (!promptId || !rating) {
+          return res.status(400).json({ message: "promptId and rating are required" });
+        }
+
+        await reviewCollection.insertOne({
+          promptId,
+          name,
+          email,
+          rating: Number(rating),
+          comment,
+          createdAt: new Date(),
+        });
+
+        const allReviews = await reviewCollection.find({ promptId }).toArray();
+        const avg =
+          allReviews.reduce((sum, r) => sum + r.rating, 0) / allReviews.length;
+
+        await promptCollection.updateOne(
+          { _id: new ObjectId(promptId) },
+          { $set: { averageRating: avg, reviewCount: allReviews.length } }
+        );
+
+        res.json({ acknowledged: true, averageRating: avg });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    
+    app.get("/reviews/:promptId", async (req, res) => {
+      try {
+        const { promptId } = req.params;
+        const result = await reviewCollection
+          .find({ promptId })
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.json({ data: result });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+
+    app.post("/reports", async (req, res) => {
+      try {
+        const data = req.body;
+        const result = await reportCollection.insertOne({
+          ...data,
+          status: "pending",
+          createdAt: new Date(),
+        });
+        res.json(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    // ADMIN ROUTES
     app.get("/admin/analytics", async (req, res) => {
       try {
         const totalPrompts = await promptCollection.countDocuments({});
         const totalUsers = await userCollection.countDocuments({});
 
         const copyCountAgg = await promptCollection
-          .aggregate([
-            { $group: { _id: null, total: { $sum: "$copyCount" } } },
-          ])
+          .aggregate([{ $group: { _id: null, total: { $sum: "$copyCount" } } }])
           .toArray();
         const totalCopies = copyCountAgg[0]?.total || 0;
 
@@ -210,10 +320,12 @@ async function run() {
           ])
           .toArray();
 
+        const totalReviews = await reviewCollection.countDocuments({});
+
         res.json({
           totalUsers,
           totalPrompts,
-          totalReviews: 0,
+          totalReviews,
           totalCopies,
           totalRevenue: 0,
           engineBreakdown,
@@ -224,13 +336,9 @@ async function run() {
       }
     });
 
-    // Get all users
     app.get("/admin/users", async (req, res) => {
       try {
-        const result = await userCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .toArray();
+        const result = await userCollection.find({}).sort({ createdAt: -1 }).toArray();
         res.json({ data: result });
       } catch (error) {
         console.error(error);
@@ -238,7 +346,6 @@ async function run() {
       }
     });
 
-    // Update user role
     app.patch("/admin/users/:id/role", async (req, res) => {
       try {
         const { id } = req.params;
@@ -254,13 +361,10 @@ async function run() {
       }
     });
 
-    // Delete user
     app.delete("/admin/users/:id", async (req, res) => {
       try {
         const { id } = req.params;
-        const result = await userCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
+        const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
         res.json(result);
       } catch (error) {
         console.error(error);
@@ -268,13 +372,9 @@ async function run() {
       }
     });
 
-    // Get all prompts (admin)
     app.get("/admin/prompts", async (req, res) => {
       try {
-        const result = await promptCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .toArray();
+        const result = await promptCollection.find({}).sort({ createdAt: -1 }).toArray();
         const total = await promptCollection.countDocuments({});
         res.json({ data: result, total });
       } catch (error) {
@@ -283,7 +383,6 @@ async function run() {
       }
     });
 
-    // Approve / Reject prompt (admin)
     app.patch("/admin/prompts/:id/status", async (req, res) => {
       try {
         const { id } = req.params;
@@ -303,13 +402,10 @@ async function run() {
       }
     });
 
-    // Delete prompt (admin)
     app.delete("/admin/prompts/:id", async (req, res) => {
       try {
         const { id } = req.params;
-        const result = await promptCollection.deleteOne({
-          _id: new ObjectId(id),
-        });
+        const result = await promptCollection.deleteOne({ _id: new ObjectId(id) });
         res.json(result);
       } catch (error) {
         console.error(error);
@@ -317,7 +413,6 @@ async function run() {
       }
     });
 
-    // Feature prompt (admin)
     app.patch("/admin/prompts/:id/feature", async (req, res) => {
       try {
         const { id } = req.params;
@@ -333,13 +428,9 @@ async function run() {
       }
     });
 
-    //Get all reported prompts
     app.get("/admin/reports", async (req, res) => {
       try {
-        const result = await reportCollection
-          .find({})
-          .sort({ createdAt: -1 })
-          .toArray();
+        const result = await reportCollection.find({}).sort({ createdAt: -1 }).toArray();
         res.json({ data: result });
       } catch (error) {
         console.error(error);
@@ -347,7 +438,6 @@ async function run() {
       }
     });
 
-    //  Dismiss report (not harmful)
     app.patch("/admin/reports/:id/dismiss", async (req, res) => {
       try {
         const { id } = req.params;
@@ -362,7 +452,6 @@ async function run() {
       }
     });
 
-    //  Warn creator
     app.patch("/admin/reports/:id/warn", async (req, res) => {
       try {
         const { id } = req.params;
@@ -377,7 +466,6 @@ async function run() {
       }
     });
 
-    //  Remove reported prompt — prompt + report দুটোই delete করে
     app.delete("/admin/reports/:id/remove-prompt", async (req, res) => {
       try {
         const { id } = req.params;
@@ -393,7 +481,6 @@ async function run() {
       }
     });
 
-    // PING 
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged! Successfully connected to MongoDB!");
   } finally {

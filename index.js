@@ -116,6 +116,77 @@ async function run() {
       }
     });
 
+    // 🎯 All Users — list সব user
+app.get("/admin/users", async (req, res) => {
+  try {
+    const userCollection = db.collection("user");
+    const result = await userCollection.find({}).sort({ createdAt: -1 }).toArray();
+    res.json({ data: result });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// 🎯 Role update
+app.patch("/admin/users/:id/role", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+    const userCollection = db.collection("user");
+    const result = await userCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { role } }
+    );
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// 🎯 All Users — list সব user
+app.get("/admin/users", async (req, res) => {
+  try {
+    const userCollection = db.collection("user");
+    const result = await userCollection.find({}).sort({ createdAt: -1 }).toArray();
+    res.json({ data: result });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// 🎯 Role update
+app.patch("/admin/users/:id/role", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+    const userCollection = db.collection("user");
+    const result = await userCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { role } }
+    );
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// 🎯 Delete user
+app.delete("/admin/users/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userCollection = db.collection("user");
+    const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
     await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!",

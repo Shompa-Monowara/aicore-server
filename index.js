@@ -157,7 +157,7 @@ app.get("/admin/users", async (req, res) => {
   }
 });
 
-// 🎯 Role update
+// Role update
 app.patch("/admin/users/:id/role", async (req, res) => {
   try {
     const { id } = req.params;
@@ -174,7 +174,7 @@ app.patch("/admin/users/:id/role", async (req, res) => {
   }
 });
 
-// 🎯 Delete user
+//  Delete user
 app.delete("/admin/users/:id", async (req, res) => {
   try {
     const { id } = req.params;

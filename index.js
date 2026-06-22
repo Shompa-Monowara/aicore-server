@@ -56,7 +56,7 @@ async function run() {
     app.get("/user/prompts", async (req, res) => {
       try {
         const { email } = req.query;
-        const query = email ? { creatorEmail: email } : {};
+        const query = email ? { email } : {};
         const result = await promptCollection.find(query).toArray();
         const totalData = await promptCollection.countDocuments(query);
         res.json({ data: result, totalData });
@@ -110,7 +110,6 @@ async function run() {
           limit = 9,
         } = req.query;
 
-        //  data 
         const query = {};
 
         if (search) {

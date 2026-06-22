@@ -53,12 +53,63 @@ async function run() {
   
     app.get("/user/prompts", async (req, res) => {
       try {
-        const result = await promptCollection.find({}).toArray();
-        
-     
-        const totalData = await promptCollection.countDocuments({});
+        const { email } = req.query; // 
+        const query = email ? { email } : {}; 
+
+        const result = await promptCollection.find(query).toArray();
+        const totalData = await promptCollection.countDocuments(query);
         
         res.json({ data: result, totalData });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    
+    app.delete("/user/prompts/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const result = await promptCollection.deleteOne({ _id: new ObjectId(id) });
+        res.json(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    //  Admin Analytics — aggregate endpoint
+    app.get("/admin/analytics", async (req, res) => {
+      try {
+        const totalPrompts = await promptCollection.countDocuments({});
+
+        // better-auth ডিফল্টে "user" নামের collection বানায় same DB তে
+        const userCollection = db.collection("user");
+        const totalUsers = await userCollection.countDocuments({});
+
+        const copyCountAgg = await promptCollection.aggregate([
+          { $group: { _id: null, total: { $sum: "$copyCount" } } },
+        ]).toArray();
+        const totalCopies = copyCountAgg[0]?.total || 0;
+
+        const engineBreakdown = await promptCollection.aggregate([
+          {
+            $group: {
+              _id: "$aiTool",
+              promptsCount: { $sum: 1 },
+              totalCopies: { $sum: "$copyCount" },
+            },
+          },
+        ]).toArray();
+
+        res.json({
+          totalUsers,
+          totalPrompts,
+          totalReviews: 0, 
+          totalCopies,
+          totalRevenue: 0,
+          engineBreakdown,
+        });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });

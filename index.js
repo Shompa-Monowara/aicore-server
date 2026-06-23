@@ -35,8 +35,10 @@ async function run() {
     const promptCollection = db.collection("prompts");
     const userCollection = db.collection("user");
     const reportCollection = db.collection("reports");
-    const bookmarkCollection = db.collection("bookmarks"); 
-    const reviewCollection = db.collection("reviews"); 
+    const bookmarkCollection = db.collection("bookmarks");
+    const reviewCollection = db.collection("reviews");
+    const copyLogCollection = db.collection("copyLogs");
+    const paymentCollection = db.collection("payments"); // 🎯 নতুন
 
     // PROMPT ROUTES
     app.post("/user/prompts", async (req, res) => {
@@ -79,15 +81,41 @@ async function run() {
       }
     });
 
-    app.patch("/user/prompts/:id", async (req, res) => {
+    app.patch("/prompts/:id/copy", async (req, res) => {
       try {
         const { id } = req.params;
-        const data = req.body;
+        const { email } = req.body;
+
+        if (email) {
+          const user = await userCollection.findOne({ email });
+          const isPremium = user?.role === "admin" || (user?.plan && user.plan !== "free");
+
+          if (!isPremium) {
+            const alreadyCopied = await copyLogCollection.findOne({ email, promptId: id });
+
+            if (!alreadyCopied) {
+              const distinctPrompts = await copyLogCollection.distinct("promptId", { email });
+              if (distinctPrompts.length >= 3) {
+                return res.status(403).json({
+                  limitReached: true,
+                  message: "Free users can copy up to 3 prompts only. Upgrade to premium for unlimited copies.",
+                });
+              }
+              await copyLogCollection.insertOne({ email, promptId: id, createdAt: new Date() });
+            }
+          } else {
+            const alreadyCopied = await copyLogCollection.findOne({ email, promptId: id });
+            if (!alreadyCopied) {
+              await copyLogCollection.insertOne({ email, promptId: id, createdAt: new Date() });
+            }
+          }
+        }
+
         const result = await promptCollection.updateOne(
           { _id: new ObjectId(id) },
-          { $set: { ...data, updatedAt: new Date() } }
+          { $inc: { copyCount: 1 } }
         );
-        res.json(result);
+        res.json({ ...result, limitReached: false });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });
@@ -162,20 +190,6 @@ async function run() {
       }
     });
 
-    app.patch("/prompts/:id/copy", async (req, res) => {
-      try {
-        const { id } = req.params;
-        const result = await promptCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $inc: { copyCount: 1 } }
-        );
-        res.json(result);
-      } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
     //  Bookmark toggle
     app.post("/bookmarks/toggle", async (req, res) => {
       try {
@@ -211,7 +225,7 @@ async function run() {
       }
     });
 
-    //  User 
+    //  User
     app.get("/bookmarks", async (req, res) => {
       try {
         const { email } = req.query;
@@ -235,7 +249,7 @@ async function run() {
     // Review add + prompt এর averageRating recalculate
     app.post("/reviews", async (req, res) => {
       try {
-        const { promptId, name, email, rating, comment } = req.body;
+        const { promptId, name, email, rating, comment, aiTool } = req.body;
         if (!promptId || !rating) {
           return res.status(400).json({ message: "promptId and rating are required" });
         }
@@ -246,6 +260,7 @@ async function run() {
           email,
           rating: Number(rating),
           comment,
+          aiTool,
           createdAt: new Date(),
         });
 
@@ -265,7 +280,42 @@ async function run() {
       }
     });
 
-    
+    //Get reviews with promopt title
+    app.get("/reviews", async (req, res) => {
+      try {
+        const { email } = req.query;
+        const query = email ? { email } : {};
+
+        const reviews = await reviewCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+
+        const promptIds = reviews
+          .filter((r) => r.promptId)
+          .map((r) => new ObjectId(r.promptId));
+
+        const prompts = promptIds.length
+          ? await promptCollection.find({ _id: { $in: promptIds } }).toArray()
+          : [];
+
+        const promptMap = {};
+        prompts.forEach((p) => {
+          promptMap[p._id.toString()] = p.title;
+        });
+
+        const withTitles = reviews.map((r) => ({
+          ...r,
+          promptTitle: promptMap[r.promptId] || "Unknown Prompt",
+        }));
+
+        res.json({ data: withTitles });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
     app.get("/reviews/:promptId", async (req, res) => {
       try {
         const { promptId } = req.params;
@@ -280,7 +330,6 @@ async function run() {
       }
     });
 
-
     app.post("/reports", async (req, res) => {
       try {
         const data = req.body;
@@ -290,6 +339,42 @@ async function run() {
           createdAt: new Date(),
         });
         res.json(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    //  Payment confirm — idempotent (duplicate session_id  dont't  process )
+    app.post("/payments/confirm", async (req, res) => {
+      try {
+        const { sessionId, email, amount, productId, title } = req.body;
+        if (!sessionId || !email) {
+          return res.status(400).json({ message: "sessionId and email are required" });
+        }
+
+        const existing = await paymentCollection.findOne({ sessionId });
+        if (existing) {
+          return res.json({ alreadyProcessed: true, payment: existing });
+        }
+
+        const payment = {
+          sessionId,
+          email,
+          amount: Number(amount),
+          productId,
+          title,
+          status: "completed",
+          createdAt: new Date(),
+        };
+        await paymentCollection.insertOne(payment);
+
+        await userCollection.updateOne(
+          { email },
+          { $set: { plan: "premium", premiumSince: new Date() } }
+        );
+
+        res.json({ acknowledged: true, payment });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });
@@ -321,12 +406,17 @@ async function run() {
 
         const totalReviews = await reviewCollection.countDocuments({});
 
+        const revenueAgg = await paymentCollection
+          .aggregate([{ $group: { _id: null, total: { $sum: "$amount" } } }])
+          .toArray();
+        const totalRevenue = revenueAgg[0]?.total || 0;
+
         res.json({
           totalUsers,
           totalPrompts,
           totalReviews,
           totalCopies,
-          totalRevenue: 0,
+          totalRevenue,
           engineBreakdown,
         });
       } catch (error) {
@@ -474,6 +564,17 @@ async function run() {
         }
         const result = await reportCollection.deleteOne({ _id: new ObjectId(id) });
         res.json(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    // 🎯 Admin — সব payment দেখা
+    app.get("/admin/payments", async (req, res) => {
+      try {
+        const result = await paymentCollection.find({}).sort({ createdAt: -1 }).toArray();
+        res.json({ data: result });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });

@@ -644,15 +644,35 @@ async function run() {
       }
     });
 
-    app.get("/admin/payments", async (req, res) => {
-      try {
-        const result = await paymentCollection.find({}).sort({ createdAt: -1 }).toArray();
-        res.json({ data: result });
-      } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
+   app.get("/admin/payments", async (req, res) => {
+  try {
+    const result = await paymentCollection
+      .aggregate([
+        { $sort: { createdAt: -1 } },
+        {
+          $lookup: {
+            from: "user",
+            localField: "email",
+            foreignField: "email",
+            as: "userInfo",
+          },
+        },
+        {
+          $addFields: {
+            purchaserName: { $arrayElemAt: ["$userInfo.name", 0] },
+            purchaserId: { $arrayElemAt: ["$userInfo._id", 0] },
+          },
+        },
+        { $project: { userInfo: 0 } },
+      ])
+      .toArray();
+
+    res.json({ data: result });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
 
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged! Successfully connected to MongoDB!");

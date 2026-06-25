@@ -1,5 +1,5 @@
-const dns = require('node:dns');
-dns.setServers(['1.1.1.1', '1.0.0.1']);
+ const dns = require("node:dns");
+ dns.setServers(['1.1.1.1', '1.0.0.1']);
 
 const express = require("express");
 const dotenv = require("dotenv");
@@ -19,10 +19,11 @@ app.use(
 );
 app.use(express.json());
 
+
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
-    strict: true,
+    strict: false, 
     deprecationErrors: true,
   },
 });
@@ -38,7 +39,53 @@ async function run() {
     const bookmarkCollection = db.collection("bookmarks");
     const reviewCollection = db.collection("reviews");
     const copyLogCollection = db.collection("copyLogs");
-    const paymentCollection = db.collection("payments"); // 🎯 নতুন
+    const paymentCollection = db.collection("payments");
+
+    // ==========================================
+    //  PAYMENT SUCCESS ROUTE (FIXED & CLEAN)
+    // ==========================================
+    app.get("/api/payment/success", async (req, res) => {
+      try {
+        const { session_id, email, prompt_id } = req.query;
+
+        if (!session_id || !email) {
+          return res.status(400).send("Missing session_id or email");
+        }
+
+        // duplicate payment entry check
+        const existing = await paymentCollection.findOne({ sessionId: session_id });
+        
+        if (!existing) {
+          // payments collection payment entry insert
+          const paymentData = {
+            sessionId: session_id,
+            email: email,
+            amount: 5,
+            productId: "premium_access",
+            title: "Aiverse Pro Access Plan",
+            status: "completed",
+            createdAt: new Date(),
+          };
+          await paymentCollection.insertOne(paymentData);
+
+          // user collection plan update 
+          await db.collection("user").updateOne(
+            { email: email },
+            { $set: { plan: "premium", premiumSince: new Date() } }
+          );
+        }
+
+        const redirectUrl = prompt_id 
+          ? `${process.env.CLIENT_URL}/dashboard/user/profile?payment=success&prompt_id=${prompt_id}`
+          : `${process.env.CLIENT_URL}/dashboard/user/profile?payment=success`;
+
+        res.redirect(redirectUrl);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send("Internal server error during redirect");
+      }
+    });
+    // ==========================================
 
     // PROMPT ROUTES
     app.post("/user/prompts", async (req, res) => {
@@ -212,7 +259,7 @@ async function run() {
       }
     });
 
-    //  Bookmark status check (page load এ initial state বুঝার জন্য)
+    //  Bookmark status check
     app.get("/bookmarks/status", async (req, res) => {
       try {
         const { email, promptId } = req.query;
@@ -225,7 +272,7 @@ async function run() {
       }
     });
 
-    //  User
+    //  User Bookmarks
     app.get("/bookmarks", async (req, res) => {
       try {
         const { email } = req.query;
@@ -345,7 +392,7 @@ async function run() {
       }
     });
 
-    //  Payment confirm — idempotent (duplicate session_id  dont't  process )
+    //  Payment confirm
     app.post("/payments/confirm", async (req, res) => {
       try {
         const { sessionId, email, amount, productId, title } = req.body;
@@ -570,7 +617,6 @@ async function run() {
       }
     });
 
-    // 🎯 Admin — সব payment দেখা
     app.get("/admin/payments", async (req, res) => {
       try {
         const result = await paymentCollection.find({}).sort({ createdAt: -1 }).toArray();

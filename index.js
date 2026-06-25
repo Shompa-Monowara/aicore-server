@@ -128,6 +128,33 @@ async function run() {
       }
     });
 
+    //PROMPT UPDATE ROUTE (REAL MONGODB OPERATION)
+
+   app.patch("/user/prompts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updatedData = req.body;
+
+    
+    delete updatedData._id;
+
+  
+    const result = await promptCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Prompt not found" });
+    }
+
+    res.json({ acknowledged: true, modifiedCount: result.modifiedCount });
+  } catch (error) {
+    console.error("Update failed:", error);
+    res.status(500).json({ message: "Internal server error during update" });
+  }
+});
+
     app.patch("/prompts/:id/copy", async (req, res) => {
       try {
         const { id } = req.params;

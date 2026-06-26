@@ -455,6 +455,54 @@ async function run() {
       }
     });
 
+    // CREATOR DASHBOARD ANALYTICS API 
+    // ==========================================
+    app.get("/api/creator/analytics", async (req, res) => {
+      try {
+        const { email } = req.query;
+        if (!email) {
+          return res.status(400).json({ message: "Email is required" });
+        }
+
+        const totalPrompts = await promptCollection.countDocuments({ email });
+        const creatorPrompts = await promptCollection.find({ email }).toArray();
+        
+        let totalCopies = 0;
+        const barData = [];
+        const promptIdsStr = creatorPrompts.map(p => p._id.toString());
+
+        for (const prompt of creatorPrompts) {
+          totalCopies += (prompt.copyCount || 0);
+          const bookmarksCount = await bookmarkCollection.countDocuments({ promptId: prompt._id.toString() });
+          
+          const shortTitle = prompt.title.length > 15 ? prompt.title.substring(0, 15) + "..." : prompt.title;
+          barData.push({
+            name: shortTitle,
+            Bookmarks: bookmarksCount,
+            Copies: prompt.copyCount || 0
+          });
+        }
+
+        const totalBookmarks = await bookmarkCollection.countDocuments({
+          promptId: { $in: promptIdsStr }
+        });
+
+        const todayStr = new Date().toISOString().split('T')[0];
+        const lineData = [
+          { name: todayStr, "Total Copies": totalCopies, "Total Prompts": totalPrompts }
+        ];
+
+        res.json({
+          stats: { totalPrompts, totalCopies, totalBookmarks },
+          barData,
+          lineData
+        });
+      } catch (error) {
+        console.error("Creator analytics error:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
     // ADMIN ROUTES
     app.get("/admin/analytics", async (req, res) => {
       try {
@@ -673,6 +721,8 @@ async function run() {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
+  
 
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged! Successfully connected to MongoDB!");

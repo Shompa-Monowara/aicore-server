@@ -1,5 +1,5 @@
- const dns = require("node:dns");
- dns.setServers(['1.1.1.1', '1.0.0.1']);
+const dns = require("node:dns");
+dns.setServers(['1.1.1.1', '1.0.0.1']);
 
 const express = require("express");
 const dotenv = require("dotenv");
@@ -19,7 +19,6 @@ app.use(
 );
 app.use(express.json());
 
-
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -30,7 +29,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
     const db = client.db("aicore");
 
     const promptCollection = db.collection("prompts");
@@ -52,11 +51,9 @@ async function run() {
           return res.status(400).send("Missing session_id or email");
         }
 
-        // duplicate payment entry check
         const existing = await paymentCollection.findOne({ sessionId: session_id });
         
         if (!existing) {
-          // payments collection payment entry insert
           const paymentData = {
             sessionId: session_id,
             email: email,
@@ -68,7 +65,6 @@ async function run() {
           };
           await paymentCollection.insertOne(paymentData);
 
-          // user collection plan update 
           await db.collection("user").updateOne(
             { email: email },
             { $set: { plan: "premium", premiumSince: new Date() } }
@@ -85,7 +81,6 @@ async function run() {
         res.status(500).send("Internal server error during redirect");
       }
     });
-    // ==========================================
 
     // PROMPT ROUTES
     app.post("/user/prompts", async (req, res) => {
@@ -128,32 +123,27 @@ async function run() {
       }
     });
 
-    //PROMPT UPDATE ROUTE (REAL MONGODB OPERATION)
+    app.patch("/user/prompts/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const updatedData = req.body;
+        delete updatedData._id;
+      
+        const result = await promptCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedData }
+        );
 
-   app.patch("/user/prompts/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updatedData = req.body;
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ message: "Prompt not found" });
+        }
 
-    
-    delete updatedData._id;
-
-  
-    const result = await promptCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: updatedData }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ message: "Prompt not found" });
-    }
-
-    res.json({ acknowledged: true, modifiedCount: result.modifiedCount });
-  } catch (error) {
-    console.error("Update failed:", error);
-    res.status(500).json({ message: "Internal server error during update" });
-  }
-});
+        res.json({ acknowledged: true, modifiedCount: result.modifiedCount });
+      } catch (error) {
+        console.error("Update failed:", error);
+        res.status(500).json({ message: "Internal server error during update" });
+      }
+    });
 
     app.patch("/prompts/:id/copy", async (req, res) => {
       try {
@@ -185,11 +175,19 @@ async function run() {
           }
         }
 
-        const result = await promptCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $inc: { copyCount: 1 } }
-        );
-        res.json({ ...result, limitReached: false });
+       const result = await promptCollection.updateOne(
+  { _id: new ObjectId(id) },
+  { $inc: { copyCount: 1 } }
+);
+const updatedPrompt = await promptCollection.findOne(
+  { _id: new ObjectId(id) },
+  { projection: { copyCount: 1 } }
+);
+res.json({ 
+  ...result, 
+  limitReached: false, 
+  copyCount: updatedPrompt?.copyCount || 0 
+});
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });
@@ -264,7 +262,6 @@ async function run() {
       }
     });
 
-    //  Bookmark toggle
     app.post("/bookmarks/toggle", async (req, res) => {
       try {
         const { email, promptId } = req.body;
@@ -286,7 +283,6 @@ async function run() {
       }
     });
 
-    //  Bookmark status check
     app.get("/bookmarks/status", async (req, res) => {
       try {
         const { email, promptId } = req.query;
@@ -299,7 +295,6 @@ async function run() {
       }
     });
 
-    //  User Bookmarks
     app.get("/bookmarks", async (req, res) => {
       try {
         const { email } = req.query;
@@ -320,7 +315,6 @@ async function run() {
       }
     });
 
-    // Review add + prompt এর averageRating recalculate
     app.post("/reviews", async (req, res) => {
       try {
         const { promptId, name, email, rating, comment, aiTool } = req.body;
@@ -354,7 +348,6 @@ async function run() {
       }
     });
 
-    //Get reviews with promopt title
     app.get("/reviews", async (req, res) => {
       try {
         const { email } = req.query;
@@ -419,7 +412,6 @@ async function run() {
       }
     });
 
-    //  Payment confirm
     app.post("/payments/confirm", async (req, res) => {
       try {
         const { sessionId, email, amount, productId, title } = req.body;
@@ -455,8 +447,6 @@ async function run() {
       }
     });
 
-    // CREATOR DASHBOARD ANALYTICS API 
-    // ==========================================
     app.get("/api/creator/analytics", async (req, res) => {
       try {
         const { email } = req.query;
@@ -464,27 +454,61 @@ async function run() {
           return res.status(400).json({ message: "Email is required" });
         }
 
-        const totalPrompts = await promptCollection.countDocuments({ email });
-        const creatorPrompts = await promptCollection.find({ email }).toArray();
-        
-        let totalCopies = 0;
-        const barData = [];
-        const promptIdsStr = creatorPrompts.map(p => p._id.toString());
+       const creatorPrompts = await promptCollection.find({
+          $or: [{ email: email }, { creatorEmail: email }]
+             }).toArray();
+        const totalPrompts = creatorPrompts.length;
 
-        for (const prompt of creatorPrompts) {
-          totalCopies += (prompt.copyCount || 0);
-          const bookmarksCount = await bookmarkCollection.countDocuments({ promptId: prompt._id.toString() });
+        let totalCopies = 0;
+        const promptIdsStr = [];
+        const promptMap = {};
+
+        creatorPrompts.forEach((p) => {
+          totalCopies += (p.copyCount || 0);
+          const idStr = p._id.toString();
+          promptIdsStr.push(idStr);
           
-          const shortTitle = prompt.title.length > 15 ? prompt.title.substring(0, 15) + "..." : prompt.title;
-          barData.push({
-            name: shortTitle,
-            Bookmarks: bookmarksCount,
-            Copies: prompt.copyCount || 0
+          promptMap[idStr] = {
+            title: p.title.length > 15 ? p.title.substring(0, 15) + "..." : p.title,
+            copies: p.copyCount || 0
+          };
+        });
+
+        const bookmarkMap = {};
+        let totalBookmarks = 0;
+
+        if (promptIdsStr.length > 0) {
+          const promptObjectIds = creatorPrompts.map(p => p._id);
+
+          const bookmarkCounts = await bookmarkCollection.aggregate([
+            { 
+              $match: { 
+                $or: [
+                  { promptId: { $in: promptIdsStr } },      
+                  { promptId: { $in: promptObjectIds } },  
+                  { promptId: { $in: promptIdsStr.map(id => new ObjectId(id)) } }
+                ]
+              } 
+            },
+            { $group: { _id: "$promptId", count: { $sum: 1 } } }
+          ]).toArray();
+
+          bookmarkCounts.forEach(b => {
+            const idKey = b._id ? b._id.toString() : "";
+            if (idKey) {
+              bookmarkMap[idKey] = b.count;
+              totalBookmarks += b.count;
+            }
           });
         }
 
-        const totalBookmarks = await bookmarkCollection.countDocuments({
-          promptId: { $in: promptIdsStr }
+        const barData = creatorPrompts.map((p) => {
+          const idStr = p._id.toString();
+          return {
+            name: promptMap[idStr]?.title || "Untitled",
+            Bookmarks: bookmarkMap[idStr] || 0,
+            Copies: promptMap[idStr]?.copies || 0
+          };
         });
 
         const todayStr = new Date().toISOString().split('T')[0];
@@ -692,39 +716,38 @@ async function run() {
       }
     });
 
-   app.get("/admin/payments", async (req, res) => {
-  try {
-    const result = await paymentCollection
-      .aggregate([
-        { $sort: { createdAt: -1 } },
-        {
-          $lookup: {
-            from: "user",
-            localField: "email",
-            foreignField: "email",
-            as: "userInfo",
-          },
-        },
-        {
-          $addFields: {
-            purchaserName: { $arrayElemAt: ["$userInfo.name", 0] },
-            purchaserId: { $arrayElemAt: ["$userInfo._id", 0] },
-          },
-        },
-        { $project: { userInfo: 0 } },
-      ])
-      .toArray();
+    app.get("/admin/payments", async (req, res) => {
+      try {
+        const result = await paymentCollection
+          .aggregate([
+            { $sort: { createdAt: -1 } },
+            {
+              $lookup: {
+                from: "user",
+                localField: "email",
+                foreignField: "email",
+                as: "userInfo",
+              },
+            },
+            {
+              $addFields: {
+                purchaserName: { $arrayElemAt: ["$userInfo.name", 0] },
+                purchaserId: { $arrayElemAt: ["$userInfo._id", 0] },
+              },
+            },
+            { $project: { userInfo: 0 } },
+          ])
+          .toArray();
 
-    res.json({ data: result });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-});
+        res.json({ data: result });
+      } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
 
-  
 
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log("Pinged! Successfully connected to MongoDB!");
   } finally {
     // await client.close();

@@ -5,6 +5,8 @@ const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
+const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 dotenv.config();
 
 const uri = process.env.MONGODB_URI;
@@ -26,6 +28,46 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
+
+const JWKS = createRemoteJWKSet(
+  new URL(`${process.env.CLIENT_URL}/api/auth/jwks`)
+);
+
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+    console.log("Incoming Authorization header:", authHeader);
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ message: "Unauthorized: Token missing" });
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ message: "Unauthorized: Token malformed" });
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS);
+    req.user = payload; 
+    console.log(payload);
+    next();
+  } catch (error) {
+    console.error("JWT Verification Error:", error);
+    return res.status(401).json({ message: "Unauthorized: Invalid token" });
+  }
+};
+
+const verifyRole = (allowedRoles) => {
+  return (req, res, next) => {
+    const user = req.user;
+    
+    if (!user || (!allowedRoles.includes(user.role) && user.role !== "admin")) {
+      return res.status(403).json({ message: "Forbidden: Access denied" });
+    }
+    next();
+  };
+};
 
 async function run() {
   try {
@@ -82,8 +124,10 @@ async function run() {
       }
     });
 
-    // PROMPT ROUTES
-    app.post("/user/prompts", async (req, res) => {
+    // ==========================================
+    //  USER & CREATOR PROMPT MANAGEMENT ROUTES
+    // ==========================================
+    app.post("/user/prompts", verifyToken, async (req, res) => {
       try {
         const data = req.body;
         const result = await promptCollection.insertOne({
@@ -97,7 +141,7 @@ async function run() {
       }
     });
 
-    app.get("/user/prompts", async (req, res) => {
+    app.get("/user/prompts", verifyToken, async (req, res) => {
       try {
         const { email } = req.query;
         const query = email ? { email } : {};
@@ -110,7 +154,7 @@ async function run() {
       }
     });
 
-    app.delete("/user/prompts/:id", async (req, res) => {
+    app.delete("/user/prompts/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
         const result = await promptCollection.deleteOne({
@@ -123,7 +167,7 @@ async function run() {
       }
     });
 
-    app.patch("/user/prompts/:id", async (req, res) => {
+    app.patch("/user/prompts/:id", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
         const updatedData = req.body;
@@ -145,7 +189,7 @@ async function run() {
       }
     });
 
-    app.patch("/prompts/:id/copy", async (req, res) => {
+    app.patch("/prompts/:id/copy", verifyToken, async (req, res) => {
       try {
         const { id } = req.params;
         const { email } = req.body;
@@ -175,19 +219,19 @@ async function run() {
           }
         }
 
-       const result = await promptCollection.updateOne(
-  { _id: new ObjectId(id) },
-  { $inc: { copyCount: 1 } }
-);
-const updatedPrompt = await promptCollection.findOne(
-  { _id: new ObjectId(id) },
-  { projection: { copyCount: 1 } }
-);
-res.json({ 
-  ...result, 
-  limitReached: false, 
-  copyCount: updatedPrompt?.copyCount || 0 
-});
+        const result = await promptCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $inc: { copyCount: 1 } }
+        );
+        const updatedPrompt = await promptCollection.findOne(
+          { _id: new ObjectId(id) },
+          { projection: { copyCount: 1 } }
+        );
+        res.json({ 
+          ...result, 
+          limitReached: false, 
+          copyCount: updatedPrompt?.copyCount || 0 
+        });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });
@@ -261,27 +305,63 @@ res.json({
         res.status(500).json({ message: "Internal server error" });
       }
     });
+app.post("/bookmarks/toggle", verifyToken, async (req, res) => {
+  try {
+    const { email, promptId } = req.body;
+    if (!email || !promptId) {
+      return res.status(400).json({ message: "Email and promptId are required" });
+    }
 
-    app.post("/bookmarks/toggle", async (req, res) => {
-      try {
-        const { email, promptId } = req.body;
-        if (!email || !promptId) {
-          return res.status(400).json({ message: "email and promptId are required" });
-        }
-        const existing = await bookmarkCollection.findOne({ email, promptId });
 
-        if (existing) {
-          await bookmarkCollection.deleteOne({ _id: existing._id });
-          return res.json({ bookmarked: false });
-        }
-
-        await bookmarkCollection.insertOne({ email, promptId, createdAt: new Date() });
-        res.json({ bookmarked: true });
-      } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Internal server error" });
-      }
+    const existing = await bookmarkCollection.findOne({ 
+      email, 
+      promptId: promptId.toString() 
     });
+
+    if (existing) {
+    
+      await bookmarkCollection.deleteOne({ _id: existing._id });
+      
+   
+      await promptCollection.updateOne(
+        { _id: new ObjectId(promptId) },
+        { $inc: { bookmarkCount: -1 } }
+      );
+      
+      const updatedPrompt = await promptCollection.findOne({ _id: new ObjectId(promptId) });
+      const currentCount = updatedPrompt?.bookmarkCount || 0;
+
+      return res.json({ 
+        bookmarked: false, 
+        bookmarkCount: currentCount < 0 ? 0 : currentCount 
+      });
+    }
+
+   
+    await bookmarkCollection.insertOne({ 
+      email, 
+      promptId: promptId.toString(), 
+      createdAt: new Date() 
+    });
+    
+  
+    await promptCollection.updateOne(
+      { _id: new ObjectId(promptId) },
+      { $inc: { bookmarkCount: 1 } }
+    );
+    
+    const updatedPrompt = await promptCollection.findOne({ _id: new ObjectId(promptId) });
+    
+    return res.json({ 
+      bookmarked: true, 
+      bookmarkCount: updatedPrompt?.bookmarkCount || 1 
+    });
+
+  } catch (error) {
+    console.error("Express bookmark toggle crash log:", error);
+    res.status(500).json({ message: "Internal server error during toggle" });
+  }
+});
 
     app.get("/bookmarks/status", async (req, res) => {
       try {
@@ -295,7 +375,7 @@ res.json({
       }
     });
 
-    app.get("/bookmarks", async (req, res) => {
+     Cinderella: app.get("/bookmarks", verifyToken, async (req, res) => {
       try {
         const { email } = req.query;
         const bookmarks = await bookmarkCollection
@@ -315,7 +395,7 @@ res.json({
       }
     });
 
-    app.post("/reviews", async (req, res) => {
+    app.post("/reviews", verifyToken, async (req, res) => {
       try {
         const { promptId, name, email, rating, comment, aiTool } = req.body;
         if (!promptId || !rating) {
@@ -348,7 +428,7 @@ res.json({
       }
     });
 
-    app.get("/reviews", async (req, res) => {
+    app.get("/reviews", verifyToken, async (req, res) => {
       try {
         const { email } = req.query;
         const query = email ? { email } : {};
@@ -397,7 +477,7 @@ res.json({
       }
     });
 
-    app.post("/reports", async (req, res) => {
+    app.post("/reports", verifyToken, async (req, res) => {
       try {
         const data = req.body;
         const result = await reportCollection.insertOne({
@@ -412,7 +492,7 @@ res.json({
       }
     });
 
-    app.post("/payments/confirm", async (req, res) => {
+    app.post("/payments/confirm", verifyToken, async (req, res) => {
       try {
         const { sessionId, email, amount, productId, title } = req.body;
         if (!sessionId || !email) {
@@ -447,56 +527,44 @@ res.json({
       }
     });
 
-    app.get("/api/creator/analytics", async (req, res) => {
+    // ==========================================
+    //  🎯 CREATOR ROUTES (FIXED BOOKMARK COUNTER)
+    // ==========================================
+    app.get("/api/creator/analytics", verifyToken, verifyRole(["creator", "admin"]), async (req, res) => {
       try {
         const { email } = req.query;
         if (!email) {
           return res.status(400).json({ message: "Email is required" });
         }
 
-       const creatorPrompts = await promptCollection.find({
+        const creatorPrompts = await promptCollection.find({
           $or: [{ email: email }, { creatorEmail: email }]
-             }).toArray();
+        }).toArray();
         const totalPrompts = creatorPrompts.length;
 
         let totalCopies = 0;
-        const promptIdsStr = [];
-        const promptMap = {};
+        const promptIdsStr = creatorPrompts.map(p => p._id.toString());
 
         creatorPrompts.forEach((p) => {
           totalCopies += (p.copyCount || 0);
-          const idStr = p._id.toString();
-          promptIdsStr.push(idStr);
-          
-          promptMap[idStr] = {
-            title: p.title.length > 15 ? p.title.substring(0, 15) + "..." : p.title,
-            copies: p.copyCount || 0
-          };
         });
 
         const bookmarkMap = {};
         let totalBookmarks = 0;
 
         if (promptIdsStr.length > 0) {
-          const promptObjectIds = creatorPrompts.map(p => p._id);
-
           const bookmarkCounts = await bookmarkCollection.aggregate([
             { 
-              $match: { 
-                $or: [
-                  { promptId: { $in: promptIdsStr } },      
-                  { promptId: { $in: promptObjectIds } },  
-                  { promptId: { $in: promptIdsStr.map(id => new ObjectId(id)) } }
-                ]
-              } 
+              $match: { promptId: { $in: promptIdsStr } } 
             },
-            { $group: { _id: "$promptId", count: { $sum: 1 } } }
+            { 
+              $group: { _id: "$promptId", count: { $sum: 1 } } 
+            }
           ]).toArray();
 
           bookmarkCounts.forEach(b => {
-            const idKey = b._id ? b._id.toString() : "";
-            if (idKey) {
-              bookmarkMap[idKey] = b.count;
+            if (b._id) {
+              bookmarkMap[b._id.toString()] = b.count;
               totalBookmarks += b.count;
             }
           });
@@ -505,9 +573,9 @@ res.json({
         const barData = creatorPrompts.map((p) => {
           const idStr = p._id.toString();
           return {
-            name: promptMap[idStr]?.title || "Untitled",
+            name: p.title.length > 12 ? p.title.substring(0, 12) + "..." : p.title,
             Bookmarks: bookmarkMap[idStr] || 0,
-            Copies: promptMap[idStr]?.copies || 0
+            Copies: p.copyCount || 0
           };
         });
 
@@ -527,8 +595,10 @@ res.json({
       }
     });
 
-    // ADMIN ROUTES
-    app.get("/admin/analytics", async (req, res) => {
+    // ==========================================
+    //  ADMIN MANAGEMENT ROUTES (ADMIN ONLY)
+    // ==========================================
+    app.get("/admin/analytics", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const totalPrompts = await promptCollection.countDocuments({});
         const totalUsers = await userCollection.countDocuments({});
@@ -571,7 +641,7 @@ res.json({
       }
     });
 
-    app.get("/admin/users", async (req, res) => {
+    app.get("/admin/users", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const result = await userCollection.find({}).sort({ createdAt: -1 }).toArray();
         res.json({ data: result });
@@ -581,7 +651,7 @@ res.json({
       }
     });
 
-    app.patch("/admin/users/:id/role", async (req, res) => {
+    app.patch("/admin/users/:id/role", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const { id } = req.params;
         const { role } = req.body;
@@ -596,7 +666,7 @@ res.json({
       }
     });
 
-    app.delete("/admin/users/:id", async (req, res) => {
+    app.delete("/admin/users/:id", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const { id } = req.params;
         const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
@@ -607,7 +677,7 @@ res.json({
       }
     });
 
-    app.get("/admin/prompts", async (req, res) => {
+    app.get("/admin/prompts", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const result = await promptCollection.find({}).sort({ createdAt: -1 }).toArray();
         const total = await promptCollection.countDocuments({});
@@ -618,7 +688,7 @@ res.json({
       }
     });
 
-    app.patch("/admin/prompts/:id/status", async (req, res) => {
+    app.patch("/admin/prompts/:id/status", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const { id } = req.params;
         const { status, rejectionFeedback } = req.body;
@@ -637,7 +707,7 @@ res.json({
       }
     });
 
-    app.delete("/admin/prompts/:id", async (req, res) => {
+    app.delete("/admin/prompts/:id", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const { id } = req.params;
         const result = await promptCollection.deleteOne({ _id: new ObjectId(id) });
@@ -648,7 +718,7 @@ res.json({
       }
     });
 
-    app.patch("/admin/prompts/:id/feature", async (req, res) => {
+    app.patch("/admin/prompts/:id/feature", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const { id } = req.params;
         const { featured } = req.body;
@@ -663,7 +733,7 @@ res.json({
       }
     });
 
-    app.get("/admin/reports", async (req, res) => {
+    app.get("/admin/reports", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const result = await reportCollection.find({}).sort({ createdAt: -1 }).toArray();
         res.json({ data: result });
@@ -673,7 +743,7 @@ res.json({
       }
     });
 
-    app.patch("/admin/reports/:id/dismiss", async (req, res) => {
+    app.patch("/admin/reports/:id/dismiss", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const { id } = req.params;
         const result = await reportCollection.updateOne(
@@ -687,7 +757,7 @@ res.json({
       }
     });
 
-    app.patch("/admin/reports/:id/warn", async (req, res) => {
+    app.patch("/admin/reports/:id/warn", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const { id } = req.params;
         const result = await reportCollection.updateOne(
@@ -701,7 +771,7 @@ res.json({
       }
     });
 
-    app.delete("/admin/reports/:id/remove-prompt", async (req, res) => {
+    app.delete("/admin/reports/:id/remove-prompt", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const { id } = req.params;
         const report = await reportCollection.findOne({ _id: new ObjectId(id) });
@@ -716,7 +786,7 @@ res.json({
       }
     });
 
-    app.get("/admin/payments", async (req, res) => {
+    app.get("/admin/payments", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
         const result = await paymentCollection
           .aggregate([
@@ -746,10 +816,9 @@ res.json({
       }
     });
 
-
-    // await client.db("admin").command({ ping: 1 });
     console.log("Pinged! Successfully connected to MongoDB!");
   } finally {
+    // Ensures that the client will close when you finish/error
     // await client.close();
   }
 }

@@ -816,6 +816,8 @@ app.post("/bookmarks/toggle", verifyToken, async (req, res) => {
       }
     });
 
+    
+
     console.log("Pinged! Successfully connected to MongoDB!");
   } finally {
     // Ensures that the client will close when you finish/error

@@ -305,63 +305,64 @@ async function run() {
         res.status(500).json({ message: "Internal server error" });
       }
     });
-app.post("/bookmarks/toggle", verifyToken, async (req, res) => {
-  try {
-    const { email, promptId } = req.body;
-    if (!email || !promptId) {
-      return res.status(400).json({ message: "Email and promptId are required" });
-    }
+
+    app.post("/bookmarks/toggle", verifyToken, async (req, res) => {
+      try {
+        const { email, promptId } = req.body;
+        if (!email || !promptId) {
+          return res.status(400).json({ message: "Email and promptId are required" });
+        }
 
 
-    const existing = await bookmarkCollection.findOne({ 
-      email, 
-      promptId: promptId.toString() 
-    });
+        const existing = await bookmarkCollection.findOne({ 
+          email, 
+          promptId: promptId.toString() 
+        });
 
-    if (existing) {
-    
-      await bookmarkCollection.deleteOne({ _id: existing._id });
+        if (existing) {
+        
+          await bookmarkCollection.deleteOne({ _id: existing._id });
+          
+       
+          await promptCollection.updateOne(
+            { _id: new ObjectId(promptId) },
+            { $inc: { bookmarkCount: -1 } }
+          );
+          
+          const updatedPrompt = await promptCollection.findOne({ _id: new ObjectId(promptId) });
+          const currentCount = updatedPrompt?.bookmarkCount || 0;
+
+          return res.json({ 
+            bookmarked: false, 
+            bookmarkCount: currentCount < 0 ? 0 : currentCount 
+          });
+        }
+
+       
+        await bookmarkCollection.insertOne({ 
+          email, 
+          promptId: promptId.toString(), 
+          createdAt: new Date() 
+        });
+        
       
-   
-      await promptCollection.updateOne(
-        { _id: new ObjectId(promptId) },
-        { $inc: { bookmarkCount: -1 } }
-      );
-      
-      const updatedPrompt = await promptCollection.findOne({ _id: new ObjectId(promptId) });
-      const currentCount = updatedPrompt?.bookmarkCount || 0;
+        await promptCollection.updateOne(
+          { _id: new ObjectId(promptId) },
+          { $inc: { bookmarkCount: 1 } }
+        );
+        
+        const updatedPrompt = await promptCollection.findOne({ _id: new ObjectId(promptId) });
+        
+        return res.json({ 
+          bookmarked: true, 
+          bookmarkCount: updatedPrompt?.bookmarkCount || 1 
+        });
 
-      return res.json({ 
-        bookmarked: false, 
-        bookmarkCount: currentCount < 0 ? 0 : currentCount 
-      });
-    }
-
-   
-    await bookmarkCollection.insertOne({ 
-      email, 
-      promptId: promptId.toString(), 
-      createdAt: new Date() 
+      } catch (error) {
+        console.error("Express bookmark toggle crash log:", error);
+        res.status(500).json({ message: "Internal server error during toggle" });
+      }
     });
-    
-  
-    await promptCollection.updateOne(
-      { _id: new ObjectId(promptId) },
-      { $inc: { bookmarkCount: 1 } }
-    );
-    
-    const updatedPrompt = await promptCollection.findOne({ _id: new ObjectId(promptId) });
-    
-    return res.json({ 
-      bookmarked: true, 
-      bookmarkCount: updatedPrompt?.bookmarkCount || 1 
-    });
-
-  } catch (error) {
-    console.error("Express bookmark toggle crash log:", error);
-    res.status(500).json({ message: "Internal server error during toggle" });
-  }
-});
 
     app.get("/bookmarks/status", async (req, res) => {
       try {
@@ -375,7 +376,7 @@ app.post("/bookmarks/toggle", verifyToken, async (req, res) => {
       }
     });
 
-     Cinderella: app.get("/bookmarks", verifyToken, async (req, res) => {
+    app.get("/bookmarks", verifyToken, async (req, res) => {
       try {
         const { email } = req.query;
         const bookmarks = await bookmarkCollection
@@ -527,8 +528,60 @@ app.post("/bookmarks/toggle", verifyToken, async (req, res) => {
       }
     });
 
+      //  TOP CREATORS ROUTE (LIMIT: 6 FOR UI BALANCING)
     // ==========================================
-    //  🎯 CREATOR ROUTES (FIXED BOOKMARK COUNTER)
+    app.get("/api/creators/top", async (req, res) => {
+      try {
+        const topCreators = await promptCollection.aggregate([
+          { $match: { status: "approved" } },
+          {
+            $group: {
+              _id: "$email", 
+              sales: { $sum: { $ifNull: ["$copyCount", 0] } },
+              templatesCount: { $sum: 1 }
+            }
+          },
+          { $sort: { sales: -1 } },
+          { $limit: 6 },
+          {
+            $lookup: {
+              from: "user",          
+              localField: "_id",     
+              foreignField: "email", 
+              as: "creatorInfo"
+            }
+          },
+          {
+            $addFields: {
+              name: { $ifNull: [{ $arrayElemAt: ["$creatorInfo.name", 0] }, { $arrayElemAt: [{ $split: ["$_id", "@"] }, 0] }] },
+              avatar: { $arrayElemAt: ["$creatorInfo.image", 0] },
+              badge: { 
+                $cond: { 
+                  if: { $gte: ["$sales", 10] }, 
+                  then: "Master", 
+                  else: { $cond: { if: { $gte: ["$sales", 5] }, then: "Expert", else: "Pro" } } 
+                } 
+              }
+            }
+          },
+          {
+            $project: {
+              creatorInfo: 0 
+            }
+          }
+        ]).toArray();
+
+        res.json(topCreators || []);
+      } catch (error) {
+        console.error("Error fetching top creators:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+
+
+    // ==========================================
+    //  CREATOR ROUTES 
     // ==========================================
     app.get("/api/creator/analytics", verifyToken, verifyRole(["creator", "admin"]), async (req, res) => {
       try {
@@ -579,10 +632,44 @@ app.post("/bookmarks/toggle", verifyToken, async (req, res) => {
           };
         });
 
-        const todayStr = new Date().toISOString().split('T')[0];
-        const lineData = [
-          { name: todayStr, "Total Copies": totalCopies, "Total Prompts": totalPrompts }
-        ];
+        // ---- Real day-by-day cumulative growth ----
+        const promptDayCounts = {};
+        creatorPrompts.forEach((p) => {
+          const day = new Date(p.createdAt).toISOString().split("T")[0];
+          promptDayCounts[day] = (promptDayCounts[day] || 0) + 1;
+        });
+
+        const copyDayCounts = {};
+        if (promptIdsStr.length > 0) {
+          const copyLogs = await copyLogCollection
+            .find({ promptId: { $in: promptIdsStr } })
+            .toArray();
+          copyLogs.forEach((c) => {
+            const day = new Date(c.createdAt).toISOString().split("T")[0];
+            copyDayCounts[day] = (copyDayCounts[day] || 0) + 1;
+          });
+        }
+
+        const allDays = Array.from(
+          new Set([...Object.keys(promptDayCounts), ...Object.keys(copyDayCounts)])
+        ).sort();
+
+        let runningPrompts = 0;
+        let runningCopies = 0;
+        let lineData = allDays.map((day) => {
+          runningPrompts += promptDayCounts[day] || 0;
+          runningCopies += copyDayCounts[day] || 0;
+          return {
+            name: day,
+            "Total Copies": runningCopies,
+            "Total Prompts": runningPrompts,
+          };
+        });
+
+        if (lineData.length === 0 && totalPrompts > 0) {
+          const todayStr = new Date().toISOString().split("T")[0];
+          lineData = [{ name: todayStr, "Total Copies": totalCopies, "Total Prompts": totalPrompts }];
+        }
 
         res.json({
           stats: { totalPrompts, totalCopies, totalBookmarks },

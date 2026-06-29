@@ -24,7 +24,7 @@ app.use(express.json());
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
-    strict: false, 
+    strict: false,
     deprecationErrors: true,
   },
 });
@@ -35,7 +35,7 @@ const JWKS = createRemoteJWKSet(
 
 const verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-    console.log("Incoming Authorization header:", authHeader);
+  console.log("Incoming Authorization header:", authHeader);
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ message: "Unauthorized: Token missing" });
@@ -49,7 +49,7 @@ const verifyToken = async (req, res, next) => {
 
   try {
     const { payload } = await jwtVerify(token, JWKS);
-    req.user = payload; 
+    req.user = payload;
     console.log(payload);
     next();
   } catch (error) {
@@ -61,7 +61,6 @@ const verifyToken = async (req, res, next) => {
 const verifyRole = (allowedRoles) => {
   return (req, res, next) => {
     const user = req.user;
-    
     if (!user || (!allowedRoles.includes(user.role) && user.role !== "admin")) {
       return res.status(403).json({ message: "Forbidden: Access denied" });
     }
@@ -83,7 +82,7 @@ async function run() {
     const paymentCollection = db.collection("payments");
 
     // ==========================================
-    //  PAYMENT SUCCESS ROUTE (FIXED & CLEAN)
+    //  PAYMENT SUCCESS ROUTE
     // ==========================================
     app.get("/api/payment/success", async (req, res) => {
       try {
@@ -94,7 +93,7 @@ async function run() {
         }
 
         const existing = await paymentCollection.findOne({ sessionId: session_id });
-        
+
         if (!existing) {
           const paymentData = {
             sessionId: session_id,
@@ -113,7 +112,7 @@ async function run() {
           );
         }
 
-        const redirectUrl = prompt_id 
+        const redirectUrl = prompt_id
           ? `${process.env.CLIENT_URL}/dashboard/user/profile?payment=success&prompt_id=${prompt_id}`
           : `${process.env.CLIENT_URL}/dashboard/user/profile?payment=success`;
 
@@ -172,7 +171,7 @@ async function run() {
         const { id } = req.params;
         const updatedData = req.body;
         delete updatedData._id;
-      
+
         const result = await promptCollection.updateOne(
           { _id: new ObjectId(id) },
           { $set: updatedData }
@@ -227,10 +226,10 @@ async function run() {
           { _id: new ObjectId(id) },
           { projection: { copyCount: 1 } }
         );
-        res.json({ 
-          ...result, 
-          limitReached: false, 
-          copyCount: updatedPrompt?.copyCount || 0 
+        res.json({
+          ...result,
+          limitReached: false,
+          copyCount: updatedPrompt?.copyCount || 0,
         });
       } catch (error) {
         console.error(error);
@@ -290,6 +289,36 @@ async function run() {
       }
     });
 
+    
+    app.get("/prompts/featured", async (req, res) => {
+      try {
+        const featuredPrompts = await promptCollection
+          .find({ status: "approved", featured: true })
+          .sort({ copyCount: -1 })
+          .limit(6)
+          .toArray();
+
+        if (featuredPrompts.length < 6) {
+          const existingIds = featuredPrompts.map((p) => p._id);
+          const remaining = await promptCollection
+            .find({
+              status: "approved",
+              _id: { $nin: existingIds },
+            })
+            .sort({ copyCount: -1 })
+            .limit(6 - featuredPrompts.length)
+            .toArray();
+
+          return res.json({ data: [...featuredPrompts, ...remaining] });
+        }
+
+        res.json({ data: featuredPrompts });
+      } catch (error) {
+        console.error("Featured prompts error:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
     app.get("/prompts/:id", async (req, res) => {
       try {
         const { id } = req.params;
@@ -306,6 +335,9 @@ async function run() {
       }
     });
 
+    // ==========================================
+    //  BOOKMARK ROUTES
+    // ==========================================
     app.post("/bookmarks/toggle", verifyToken, async (req, res) => {
       try {
         const { email, promptId } = req.body;
@@ -313,53 +345,41 @@ async function run() {
           return res.status(400).json({ message: "Email and promptId are required" });
         }
 
-
-        const existing = await bookmarkCollection.findOne({ 
-          email, 
-          promptId: promptId.toString() 
+        const existing = await bookmarkCollection.findOne({
+          email,
+          promptId: promptId.toString(),
         });
 
         if (existing) {
-        
           await bookmarkCollection.deleteOne({ _id: existing._id });
-          
-       
           await promptCollection.updateOne(
             { _id: new ObjectId(promptId) },
             { $inc: { bookmarkCount: -1 } }
           );
-          
           const updatedPrompt = await promptCollection.findOne({ _id: new ObjectId(promptId) });
           const currentCount = updatedPrompt?.bookmarkCount || 0;
-
-          return res.json({ 
-            bookmarked: false, 
-            bookmarkCount: currentCount < 0 ? 0 : currentCount 
+          return res.json({
+            bookmarked: false,
+            bookmarkCount: currentCount < 0 ? 0 : currentCount,
           });
         }
 
-       
-        await bookmarkCollection.insertOne({ 
-          email, 
-          promptId: promptId.toString(), 
-          createdAt: new Date() 
+        await bookmarkCollection.insertOne({
+          email,
+          promptId: promptId.toString(),
+          createdAt: new Date(),
         });
-        
-      
         await promptCollection.updateOne(
           { _id: new ObjectId(promptId) },
           { $inc: { bookmarkCount: 1 } }
         );
-        
         const updatedPrompt = await promptCollection.findOne({ _id: new ObjectId(promptId) });
-        
-        return res.json({ 
-          bookmarked: true, 
-          bookmarkCount: updatedPrompt?.bookmarkCount || 1 
+        return res.json({
+          bookmarked: true,
+          bookmarkCount: updatedPrompt?.bookmarkCount || 1,
         });
-
       } catch (error) {
-        console.error("Express bookmark toggle crash log:", error);
+        console.error("Bookmark toggle error:", error);
         res.status(500).json({ message: "Internal server error during toggle" });
       }
     });
@@ -396,26 +416,46 @@ async function run() {
       }
     });
 
+    // ==========================================
+    //  REVIEW ROUTES
+    // ==========================================
     app.post("/reviews", verifyToken, async (req, res) => {
       try {
         const { promptId, name, email, rating, comment, aiTool } = req.body;
+
         if (!promptId || !rating) {
           return res.status(400).json({ message: "promptId and rating are required" });
+        }
+
+        // ✅ Rating range validation (1-5 only, whole number)
+        const numRating = Number(rating);
+        if (!Number.isInteger(numRating) || numRating < 1 || numRating > 5) {
+          return res.status(400).json({ message: "Rating must be a whole number between 1 and 5" });
+        }
+
+        // ✅ Junk/empty comment validation
+        if (!comment || comment.trim().length < 5) {
+          return res.status(400).json({ message: "Review comment must be at least 5 characters" });
+        }
+
+        // ✅ Duplicate check — same email same promptId e ekbar e review
+        const existingReview = await reviewCollection.findOne({ promptId, email });
+        if (existingReview) {
+          return res.status(409).json({ message: "You have already reviewed this prompt" });
         }
 
         await reviewCollection.insertOne({
           promptId,
           name,
           email,
-          rating: Number(rating),
-          comment,
+          rating: numRating,
+          comment: comment.trim(),
           aiTool,
           createdAt: new Date(),
         });
 
         const allReviews = await reviewCollection.find({ promptId }).toArray();
-        const avg =
-          allReviews.reduce((sum, r) => sum + r.rating, 0) / allReviews.length;
+        const avg = allReviews.reduce((sum, r) => sum + r.rating, 0) / allReviews.length;
 
         await promptCollection.updateOne(
           { _id: new ObjectId(promptId) },
@@ -425,6 +465,43 @@ async function run() {
         res.json({ acknowledged: true, averageRating: avg });
       } catch (error) {
         console.error(error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    // review
+    app.get("/reviews/public", async (req, res) => {
+      try {
+        const reviews = await reviewCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .limit(6)
+          .toArray();
+
+        const promptIds = reviews
+          .filter((r) => r.promptId)
+          .map((r) => new ObjectId(r.promptId));
+
+        const prompts = promptIds.length
+          ? await promptCollection
+              .find({ _id: { $in: promptIds } })
+              .project({ title: 1 })
+              .toArray()
+          : [];
+
+        const promptMap = {};
+        prompts.forEach((p) => {
+          promptMap[p._id.toString()] = p.title;
+        });
+
+        const withTitles = reviews.map((r) => ({
+          ...r,
+          promptTitle: promptMap[r.promptId] || "Unknown Prompt",
+        }));
+
+        res.json({ data: withTitles });
+      } catch (error) {
+        console.error("Public reviews error:", error);
         res.status(500).json({ message: "Internal server error" });
       }
     });
@@ -478,6 +555,9 @@ async function run() {
       }
     });
 
+    // ==========================================
+    //  REPORT ROUTES
+    // ==========================================
     app.post("/reports", verifyToken, async (req, res) => {
       try {
         const data = req.body;
@@ -493,6 +573,9 @@ async function run() {
       }
     });
 
+    // ==========================================
+    //  PAYMENT ROUTES
+    // ==========================================
     app.post("/payments/confirm", verifyToken, async (req, res) => {
       try {
         const { sessionId, email, amount, productId, title } = req.body;
@@ -528,60 +611,8 @@ async function run() {
       }
     });
 
-      //  TOP CREATORS ROUTE (LIMIT: 6 FOR UI BALANCING)
     // ==========================================
-    app.get("/api/creators/top", async (req, res) => {
-      try {
-        const topCreators = await promptCollection.aggregate([
-          { $match: { status: "approved" } },
-          {
-            $group: {
-              _id: "$email", 
-              sales: { $sum: { $ifNull: ["$copyCount", 0] } },
-              templatesCount: { $sum: 1 }
-            }
-          },
-          { $sort: { sales: -1 } },
-          { $limit: 6 },
-          {
-            $lookup: {
-              from: "user",          
-              localField: "_id",     
-              foreignField: "email", 
-              as: "creatorInfo"
-            }
-          },
-          {
-            $addFields: {
-              name: { $ifNull: [{ $arrayElemAt: ["$creatorInfo.name", 0] }, { $arrayElemAt: [{ $split: ["$_id", "@"] }, 0] }] },
-              avatar: { $arrayElemAt: ["$creatorInfo.image", 0] },
-              badge: { 
-                $cond: { 
-                  if: { $gte: ["$sales", 10] }, 
-                  then: "Master", 
-                  else: { $cond: { if: { $gte: ["$sales", 5] }, then: "Expert", else: "Pro" } } 
-                } 
-              }
-            }
-          },
-          {
-            $project: {
-              creatorInfo: 0 
-            }
-          }
-        ]).toArray();
-
-        res.json(topCreators || []);
-      } catch (error) {
-        console.error("Error fetching top creators:", error);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-
-
-    // ==========================================
-    //  CREATOR ROUTES 
+    //  CREATOR ROUTES
     // ==========================================
     app.get("/api/creator/analytics", verifyToken, verifyRole(["creator", "admin"]), async (req, res) => {
       try {
@@ -591,15 +622,15 @@ async function run() {
         }
 
         const creatorPrompts = await promptCollection.find({
-          $or: [{ email: email }, { creatorEmail: email }]
+          $or: [{ email: email }, { creatorEmail: email }],
         }).toArray();
         const totalPrompts = creatorPrompts.length;
 
         let totalCopies = 0;
-        const promptIdsStr = creatorPrompts.map(p => p._id.toString());
+        const promptIdsStr = creatorPrompts.map((p) => p._id.toString());
 
         creatorPrompts.forEach((p) => {
-          totalCopies += (p.copyCount || 0);
+          totalCopies += p.copyCount || 0;
         });
 
         const bookmarkMap = {};
@@ -607,15 +638,11 @@ async function run() {
 
         if (promptIdsStr.length > 0) {
           const bookmarkCounts = await bookmarkCollection.aggregate([
-            { 
-              $match: { promptId: { $in: promptIdsStr } } 
-            },
-            { 
-              $group: { _id: "$promptId", count: { $sum: 1 } } 
-            }
+            { $match: { promptId: { $in: promptIdsStr } } },
+            { $group: { _id: "$promptId", count: { $sum: 1 } } },
           ]).toArray();
 
-          bookmarkCounts.forEach(b => {
+          bookmarkCounts.forEach((b) => {
             if (b._id) {
               bookmarkMap[b._id.toString()] = b.count;
               totalBookmarks += b.count;
@@ -628,11 +655,10 @@ async function run() {
           return {
             name: p.title.length > 12 ? p.title.substring(0, 12) + "..." : p.title,
             Bookmarks: bookmarkMap[idStr] || 0,
-            Copies: p.copyCount || 0
+            Copies: p.copyCount || 0,
           };
         });
 
-        // ---- Real day-by-day cumulative growth ----
         const promptDayCounts = {};
         creatorPrompts.forEach((p) => {
           const day = new Date(p.createdAt).toISOString().split("T")[0];
@@ -671,13 +697,42 @@ async function run() {
           lineData = [{ name: todayStr, "Total Copies": totalCopies, "Total Prompts": totalPrompts }];
         }
 
-        res.json({
-          stats: { totalPrompts, totalCopies, totalBookmarks },
-          barData,
-          lineData
-        });
+        res.json({ stats: { totalPrompts, totalCopies, totalBookmarks }, barData, lineData });
       } catch (error) {
         console.error("Creator analytics error:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    // token
+    app.get("/creators/top", async (req, res) => {
+      try {
+        const creators = await userCollection
+          .find({ role: "creator" })
+          .project({ name: 1, email: 1, image: 1, role: 1 })
+          .toArray();
+
+        const creatorsWithStats = await Promise.all(
+          creators.map(async (creator) => {
+            const creatorPrompts = await promptCollection
+              .find({ email: creator.email, status: "approved" })
+              .project({ copyCount: 1 })
+              .toArray();
+
+            const templatesCount = creatorPrompts.length;
+            const copyCount = creatorPrompts.reduce(
+              (sum, p) => sum + (p.copyCount || 0),
+              0
+            );
+
+            return { ...creator, templatesCount, copyCount };
+          })
+        );
+
+        creatorsWithStats.sort((a, b) => b.copyCount - a.copyCount);
+        res.json({ data: creatorsWithStats.slice(0, 6) });
+      } catch (error) {
+        console.error("Top creators error:", error);
         res.status(500).json({ message: "Internal server error" });
       }
     });
@@ -714,14 +769,7 @@ async function run() {
           .toArray();
         const totalRevenue = revenueAgg[0]?.total || 0;
 
-        res.json({
-          totalUsers,
-          totalPrompts,
-          totalReviews,
-          totalCopies,
-          totalRevenue,
-          engineBreakdown,
-        });
+        res.json({ totalUsers, totalPrompts, totalReviews, totalCopies, totalRevenue, engineBreakdown });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });
@@ -730,8 +778,18 @@ async function run() {
 
     app.get("/admin/users", verifyToken, verifyRole(["admin"]), async (req, res) => {
       try {
-        const result = await userCollection.find({}).sort({ createdAt: -1 }).toArray();
-        res.json({ data: result });
+        const { page = 1, limit = 10 } = req.query;
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+
+        const total = await userCollection.countDocuments({});
+        const result = await userCollection
+          .find({})
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(parseInt(limit))
+          .toArray();
+
+        res.json({ data: result, total, page: parseInt(page), totalPages: Math.ceil(total / parseInt(limit)) });
       } catch (error) {
         console.error(error);
         res.status(500).json({ message: "Internal server error" });
@@ -903,11 +961,8 @@ async function run() {
       }
     });
 
-    
-
     console.log("Pinged! Successfully connected to MongoDB!");
   } finally {
-    // Ensures that the client will close when you finish/error
     // await client.close();
   }
 }
